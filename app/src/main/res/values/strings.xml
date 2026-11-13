@@ -1,0 +1,32 @@
+<resources>
+    <string name="app_name">Mesh2Motion</string>
+    <string name="loading_studio">Loading 3D Rigging Studio…</string>
+    <string name="error_loading_title">Unable to load Mesh2Motion</string>
+    <string name="error_loading_subtitle">Check that the local web bundle is available and try reloading the workspace.</string>
+    <string name="action_reload">Reload Studio</string>
+    <string name="action_upload_hint">Import 3D Model</string>
+    <string name="exit_dialog_title">Leave Mesh2Motion?</string>
+    <string name="exit_dialog_message">Unsaved rigging or animation progress in the current WebGL scene will be lost.</string>
+    <string name="exit_dialog_confirm">Exit</string>
+    <string name="exit_dialog_cancel">Stay</string>
+    <string name="download_saved_toast">Saved to Downloads: %1$s</string>
+    <string name="download_failed_toast">Failed to save file: %1$s</string>
+    <string name="file_chooser_title">Select 3D Model (.glb, .gltf, .fbx, .dae)</string>
+    <string name="cd_reload_studio">Reload 3D studio</string>
+    <string name="cd_studio_badge">Mesh2Motion studio status</string>
+    <string name="tab_face_rig_debug">Face Rig Debug</string>
+    <string name="tab_web_studio">Mesh2Motion Web</string>
+    <string name="facerig_animations_title">Face Rig Animations</string>
+    <string name="facerig_active_bone_format">Active bone: %1$s</string>
+    <string name="facerig_active_expr_format">Expr: %1$s | Bone: %2$s</string>
+    <string name="facerig_anim_bone_hint">%1$s | Test bone: %2$s</string>
+    <string name="facerig_validator_ok">Validator OK · %1$d bones · %2$d verts</string>
+    <string name="facerig_validator_errors">Validator errors: %1$d (see Logcat)</string>
+    <string name="facerig_parent_verified">Skeleton: head → face (attached)</string>
+    <string name="facerig_parent_missing">Skeleton: face root detached</string>
+    <string name="cd_validator_status">Face rig validation status</string>
+    <string name="cd_toggle_skeleton">Toggle skeleton overlay</string>
+    <string name="cd_toggle_wireframe">Toggle wireframe</string>
+    <string name="cd_toggle_head_motion">Toggle head parent rotation</string>
+    <string name="cd_reset_camera">Reset 3D camera</string>
+</resources>

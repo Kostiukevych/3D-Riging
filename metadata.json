@@ -1,0 +1,6 @@
+{
+  "name": "Mesh2Motion",
+  "description": "Local 3D auto-rigging and animation studio powered by Mesh2Motion in an offline-ready Android WebView.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
