@@ -1,6 +1,7 @@
 package com.example.ui
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -11,6 +12,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -21,11 +23,14 @@ import androidx.compose.material.icons.rounded.AccessibilityNew
 import androidx.compose.material.icons.rounded.AutoFixHigh
 import androidx.compose.material.icons.rounded.CenterFocusStrong
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.CompareArrows
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.GridOn
 import androidx.compose.material.icons.rounded.Hub
+import androidx.compose.material.icons.rounded.MyLocation
+import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.RestartAlt
-import androidx.compose.material.icons.rounded.TouchApp
+import androidx.compose.material.icons.rounded.Straighten
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.Button
@@ -36,6 +41,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -47,6 +55,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -55,21 +64,31 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.R
 import com.example.Vec3
+import com.example.facerig.CameraPreset
 import com.example.facerig.CharacterRigEngine
 import com.example.facerig.DebugAnimationType
 import com.example.facerig.FaceDebugSnapshot
 import com.example.facerig.FaceMarkers
 import com.example.facerig.FaceRigAdjustment
 import com.example.facerig.FaceRigGlSurfaceView
+import com.example.facerig.ProjectedMarker
+import kotlin.math.roundToInt
 
-private enum class AdjustSubMode {
+private enum class StudioSubTab {
+  RIG_SETUP,
+  ANIMATION,
+}
+
+private enum class FineTuneSubMode {
   MARKERS,
   BBOX,
 }
@@ -84,7 +103,8 @@ fun FaceRigDebugScreen(
   onSnapshotUpdate: (FaceDebugSnapshot) -> Unit,
   onRigAdjustmentChange: (FaceRigAdjustment) -> Unit,
   onMarkersChange: (FaceMarkers) -> Unit,
-  onMarkerDragDelta: (Int, Vec3) -> Unit,
+  onMarkerDragDelta: (Int, Vec3, Boolean) -> Unit,
+  onMarkerPlaceAt: (Int, Vec3, Boolean) -> Unit,
   onResetMarkersToAuto: () -> Unit,
   onLoadCustomModel: () -> Unit,
   onResetToTestHead: () -> Unit,
@@ -94,13 +114,20 @@ fun FaceRigDebugScreen(
   val context = LocalContext.current
   val lifecycleOwner = LocalLifecycleOwner.current
 
+  var activeSubTab by remember { mutableStateOf(StudioSubTab.RIG_SETUP) }
   var showSkeleton by remember { mutableStateOf(true) }
   var showWireframe by remember { mutableStateOf(false) }
-  var showAdjustPanel by remember { mutableStateOf(false) }
-  var adjustSubMode by remember { mutableStateOf(AdjustSubMode.MARKERS) }
-  var selectedMarkerIndex by remember { mutableIntStateOf(2) } // default: noseTip
-  var editMarkersOn3D by remember { mutableStateOf(false) }
+  var symmetryEnabled by remember { mutableStateOf(true) }
+  var surfaceSnapEnabled by remember { mutableStateOf(true) }
+  var showFineTune by remember { mutableStateOf(false) }
+  var fineTuneSubMode by remember { mutableStateOf(FineTuneSubMode.MARKERS) }
+  var selectedMarkerIndex by remember { mutableIntStateOf(FaceMarkers.IDX_NOSE) }
   var headSway by remember { mutableStateOf(engine.headMotionEnabled) }
+  var projectedMarkers by remember { mutableStateOf<List<ProjectedMarker>>(emptyList()) }
+
+  val currentSymmetry by rememberUpdatedState(symmetryEnabled)
+  val currentDragCallback by rememberUpdatedState(onMarkerDragDelta)
+  val currentPlaceCallback by rememberUpdatedState(onMarkerPlaceAt)
 
   val glSurfaceView =
     remember(engine) {
@@ -109,14 +136,17 @@ fun FaceRigDebugScreen(
         engine = engine,
         onSnapshot = onSnapshotUpdate,
         onMarkerSelected = { idx -> selectedMarkerIndex = idx },
-        onMarkerDragged = { idx, delta -> onMarkerDragDelta(idx, delta) },
+        onMarkerDragged = { idx, delta -> currentDragCallback(idx, delta, currentSymmetry) },
+        onMarkerPlaced = { idx, target -> currentPlaceCallback(idx, target, currentSymmetry) },
+        onMarkersProjected = { list -> projectedMarkers = list },
       )
     }
 
-  LaunchedEffect(showAdjustPanel, adjustSubMode, editMarkersOn3D, selectedMarkerIndex) {
-    val markersVisible = showAdjustPanel && adjustSubMode == AdjustSubMode.MARKERS
-    glSurfaceView.showMarkers = markersVisible
-    glSurfaceView.editMarkersMode = markersVisible && editMarkersOn3D
+  LaunchedEffect(activeSubTab, surfaceSnapEnabled, selectedMarkerIndex) {
+    val isSetup = activeSubTab == StudioSubTab.RIG_SETUP
+    glSurfaceView.showMarkers = isSetup
+    glSurfaceView.editMarkersMode = isSetup
+    glSurfaceView.surfaceSnapEnabled = surfaceSnapEnabled
     glSurfaceView.selectedMarkerIndex = selectedMarkerIndex
   }
 
@@ -139,7 +169,85 @@ fun FaceRigDebugScreen(
       modifier = Modifier.fillMaxSize().testTag("facerig_gl_viewport"),
     )
 
-    // Top overlay row: Left status HUD + Right action icons
+    // 2D projected labels next to 3D landmark handles in Rig Setup mode
+    if (activeSubTab == StudioSubTab.RIG_SETUP && projectedMarkers.isNotEmpty()) {
+      val shortLabels =
+        listOf(
+          stringResource(R.string.facerig_marker_eye_l),
+          stringResource(R.string.facerig_marker_eye_r),
+          stringResource(R.string.facerig_marker_nose),
+          stringResource(R.string.facerig_marker_mouth_l),
+          stringResource(R.string.facerig_marker_mouth_r),
+          stringResource(R.string.facerig_marker_chin),
+          stringResource(R.string.facerig_marker_brow_l),
+          stringResource(R.string.facerig_marker_brow_r),
+          stringResource(R.string.facerig_marker_ear_l),
+          stringResource(R.string.facerig_marker_ear_r),
+        )
+      Box(modifier = Modifier.fillMaxSize()) {
+        projectedMarkers.forEach { pm ->
+          if (!pm.visible || pm.index !in shortLabels.indices) return@forEach
+          // When symmetry is ON, show labels for left + center points plus selected point to keep view clean
+          val isMirrorSecondary = symmetryEnabled && pm.index in listOf(
+            FaceMarkers.IDX_EYE_R,
+            FaceMarkers.IDX_MOUTH_R,
+            FaceMarkers.IDX_BROW_R,
+            FaceMarkers.IDX_EAR_R,
+          )
+          val isSelected = pm.index == selectedMarkerIndex
+          if (isMirrorSecondary && !isSelected) return@forEach
+
+          val displayLabel =
+            if (symmetryEnabled) {
+              shortLabels[pm.index].removeSuffix(" L").removeSuffix(" R")
+            } else {
+              shortLabels[pm.index]
+            }
+
+          Surface(
+            modifier =
+              Modifier.offset {
+                IntOffset(
+                  x = (pm.screenX + 14f).roundToInt(),
+                  y = (pm.screenY - 26f).roundToInt(),
+                )
+              },
+            shape = RoundedCornerShape(8.dp),
+            color =
+              if (isSelected) {
+                MaterialTheme.colorScheme.tertiary.copy(alpha = 0.94f)
+              } else {
+                MaterialTheme.colorScheme.surface.copy(alpha = 0.80f)
+              },
+            border =
+              BorderStroke(
+                width = 1.dp,
+                color =
+                  if (isSelected) {
+                    MaterialTheme.colorScheme.onTertiary
+                  } else {
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)
+                  },
+              ),
+          ) {
+            Text(
+              text = displayLabel,
+              style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+              fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+              color =
+                if (isSelected) {
+                  MaterialTheme.colorScheme.onTertiary
+                } else {
+                  MaterialTheme.colorScheme.onSurface
+                },
+              modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+            )
+          }
+        }
+      }
+    }
+
+    // Top overlay: compact HUD + Camera Presets on left, Action toolbar on right
     Row(
       modifier =
         Modifier
@@ -149,115 +257,136 @@ fun FaceRigDebugScreen(
       horizontalArrangement = Arrangement.SpaceBetween,
       verticalAlignment = Alignment.Top,
     ) {
-      Surface(
+      Column(
         modifier = Modifier.weight(1f, fill = false).padding(end = 8.dp),
-        shape = RoundedCornerShape(16.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
-        tonalElevation = 4.dp,
+        verticalArrangement = Arrangement.spacedBy(6.dp),
       ) {
-        Column(
-          modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
-          verticalArrangement = Arrangement.spacedBy(3.dp),
+        Surface(
+          shape = RoundedCornerShape(16.dp),
+          color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
+          tonalElevation = 4.dp,
         ) {
-          Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
+          Column(
+            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
           ) {
-            Icon(
-              imageVector =
-                if (snapshot.validationErrors.isEmpty()) {
-                  Icons.Rounded.CheckCircle
-                } else {
-                  Icons.Rounded.WarningAmber
-                },
-              contentDescription = stringResource(R.string.cd_validator_status),
-              tint =
-                if (snapshot.validationErrors.isEmpty()) {
-                  MaterialTheme.colorScheme.primary
-                } else {
-                  MaterialTheme.colorScheme.error
-                },
-              modifier = Modifier.size(16.dp),
-            )
-            Text(
-              text =
-                if (snapshot.validationErrors.isEmpty()) {
-                  stringResource(
-                    R.string.facerig_validator_ok,
-                    snapshot.headBoneCount,
-                    snapshot.vertexCount,
-                  )
-                } else {
-                  stringResource(R.string.facerig_validator_errors, snapshot.validationErrors.size)
-                },
-              style = MaterialTheme.typography.labelMedium,
-              color = MaterialTheme.colorScheme.onSurface,
-            )
-          }
-
-          Text(
-            text =
-              if (snapshot.isHeadChildVerified) {
-                stringResource(R.string.facerig_parent_verified)
-              } else {
-                stringResource(R.string.facerig_parent_missing)
-              },
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.secondary,
-          )
-
-          Text(
-            text =
-              if (snapshot.hasManualMarkers) {
-                stringResource(R.string.facerig_fit_mode_manual)
-              } else {
-                stringResource(R.string.facerig_fit_mode_auto)
-              },
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-          )
-
-          if (snapshot.detectedHeadBoneName != null) {
-            Text(
-              text = stringResource(R.string.facerig_head_bone_detected, snapshot.detectedHeadBoneName),
-              style = MaterialTheme.typography.labelSmall,
-              color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-          }
-
-          val boneLabel =
-            when {
-              snapshot.selectedAnimation == DebugAnimationType.BONE_TEST -> {
-                stringResource(R.string.facerig_active_bone_format, snapshot.activeBoneName)
-              }
-              snapshot.activeExpressionName != null -> {
-                stringResource(
-                  R.string.facerig_active_expr_format,
-                  snapshot.activeExpressionName,
-                  snapshot.activeBoneName,
-                )
-              }
-              else -> {
-                stringResource(
-                  R.string.facerig_anim_bone_hint,
-                  localizedAnimationLabel(snapshot.selectedAnimation),
-                  snapshot.activeBoneName,
-                )
-              }
+            Row(
+              verticalAlignment = Alignment.CenterVertically,
+              horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+              Icon(
+                imageVector =
+                  if (snapshot.validationErrors.isEmpty()) {
+                    Icons.Rounded.CheckCircle
+                  } else {
+                    Icons.Rounded.WarningAmber
+                  },
+                contentDescription = stringResource(R.string.cd_validator_status),
+                tint =
+                  if (snapshot.validationErrors.isEmpty()) {
+                    MaterialTheme.colorScheme.primary
+                  } else {
+                    MaterialTheme.colorScheme.error
+                  },
+                modifier = Modifier.size(16.dp),
+              )
+              Text(
+                text =
+                  if (snapshot.validationErrors.isEmpty()) {
+                    stringResource(
+                      R.string.facerig_validator_ok,
+                      snapshot.headBoneCount,
+                      snapshot.vertexCount,
+                    )
+                  } else {
+                    stringResource(R.string.facerig_validator_errors, snapshot.validationErrors.size)
+                  },
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+              )
             }
 
-          Text(
-            text = boneLabel,
-            style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.tertiary,
-            modifier = Modifier.testTag("active_bone_label"),
-          )
+            if (activeSubTab == StudioSubTab.ANIMATION) {
+              val boneLabel =
+                when {
+                  snapshot.selectedAnimation == DebugAnimationType.BONE_TEST -> {
+                    stringResource(R.string.facerig_active_bone_format, snapshot.activeBoneName)
+                  }
+                  snapshot.activeExpressionName != null -> {
+                    stringResource(
+                      R.string.facerig_active_expr_format,
+                      snapshot.activeExpressionName,
+                      snapshot.activeBoneName,
+                    )
+                  }
+                  else -> {
+                    stringResource(
+                      R.string.facerig_anim_bone_hint,
+                      localizedAnimationLabel(snapshot.selectedAnimation),
+                      snapshot.activeBoneName,
+                    )
+                  }
+                }
+              Text(
+                text = boneLabel,
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.tertiary,
+                modifier = Modifier.testTag("active_bone_label"),
+              )
+            } else {
+              Text(
+                text =
+                  if (snapshot.hasManualMarkers) {
+                    stringResource(R.string.facerig_fit_mode_manual)
+                  } else {
+                    stringResource(R.string.facerig_fit_mode_auto)
+                  },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.testTag("active_bone_label"),
+              )
+            }
+          }
+        }
+
+        // Camera quick-preset pills (Front / 3/4 / Side)
+        Surface(
+          shape = RoundedCornerShape(14.dp),
+          color = MaterialTheme.colorScheme.surface.copy(alpha = 0.86f),
+          tonalElevation = 4.dp,
+        ) {
+          Row(
+            modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+          ) {
+            TextButton(
+              onClick = { glSurfaceView.setCameraPreset(CameraPreset.FRONT) },
+              contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+              modifier = Modifier.heightIn(min = 48.dp).testTag("cam_front_btn"),
+            ) {
+              Text(stringResource(R.string.facerig_cam_front), style = MaterialTheme.typography.labelSmall)
+            }
+            TextButton(
+              onClick = { glSurfaceView.setCameraPreset(CameraPreset.THREE_QUARTER) },
+              contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+              modifier = Modifier.heightIn(min = 48.dp).testTag("cam_three_quarter_btn"),
+            ) {
+              Text(stringResource(R.string.facerig_cam_three_quarter), style = MaterialTheme.typography.labelSmall)
+            }
+            TextButton(
+              onClick = { glSurfaceView.setCameraPreset(CameraPreset.SIDE) },
+              contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
+              modifier = Modifier.heightIn(min = 48.dp).testTag("cam_side_btn"),
+            ) {
+              Text(stringResource(R.string.facerig_cam_side), style = MaterialTheme.typography.labelSmall)
+            }
+          }
         }
       }
 
-      // Top-right toolbar: Upload Model + Reset + Fit Sliders/Markers + Viewport icons
+      // Top-right toolbar: Upload Model + Reset + Skeleton + Wireframe + Head Motion + Reset Camera
       Surface(
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.88f),
@@ -293,23 +422,6 @@ fun FaceRigDebugScreen(
               }
             }
             IconButton(
-              onClick = { showAdjustPanel = !showAdjustPanel },
-              modifier = Modifier.testTag("toggle_rig_adjust_btn"),
-            ) {
-              Icon(
-                imageVector = Icons.Rounded.Tune,
-                contentDescription = stringResource(R.string.cd_toggle_rig_adjust),
-                tint =
-                  if (showAdjustPanel) {
-                    MaterialTheme.colorScheme.primary
-                  } else {
-                    MaterialTheme.colorScheme.onSurfaceVariant
-                  },
-              )
-            }
-          }
-          Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            IconButton(
               onClick = {
                 showSkeleton = !showSkeleton
                 glSurfaceView.showSkeleton = showSkeleton
@@ -327,6 +439,8 @@ fun FaceRigDebugScreen(
                   },
               )
             }
+          }
+          Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
             IconButton(
               onClick = {
                 showWireframe = !showWireframe
@@ -458,7 +572,7 @@ fun FaceRigDebugScreen(
       }
     }
 
-    // Bottom dock: FaceFit 6-Marker / BBox panel + Model Reset + Animation buttons
+    // Bottom Dock: Guided Rig Setup vs Animation Preview
     Column(
       modifier =
         Modifier
@@ -467,11 +581,11 @@ fun FaceRigDebugScreen(
           .padding(10.dp),
       verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-      AnimatedVisibility(visible = showAdjustPanel) {
+      AnimatedVisibility(visible = activeSubTab == StudioSubTab.RIG_SETUP && showFineTune) {
         Surface(
           modifier = Modifier.fillMaxWidth().testTag("rig_adjust_panel"),
           shape = RoundedCornerShape(18.dp),
-          color = MaterialTheme.colorScheme.surface.copy(alpha = 0.93f),
+          color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
           tonalElevation = 6.dp,
         ) {
           Column(
@@ -485,21 +599,21 @@ fun FaceRigDebugScreen(
             ) {
               Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FilterChip(
-                  selected = adjustSubMode == AdjustSubMode.MARKERS,
-                  onClick = { adjustSubMode = AdjustSubMode.MARKERS },
+                  selected = fineTuneSubMode == FineTuneSubMode.MARKERS,
+                  onClick = { fineTuneSubMode = FineTuneSubMode.MARKERS },
                   label = { Text(stringResource(R.string.facerig_mode_markers)) },
                   modifier = Modifier.testTag("mode_markers_chip"),
                 )
                 FilterChip(
-                  selected = adjustSubMode == AdjustSubMode.BBOX,
-                  onClick = { adjustSubMode = AdjustSubMode.BBOX },
+                  selected = fineTuneSubMode == FineTuneSubMode.BBOX,
+                  onClick = { fineTuneSubMode = FineTuneSubMode.BBOX },
                   label = { Text(stringResource(R.string.facerig_mode_bbox)) },
                   modifier = Modifier.testTag("mode_bbox_chip"),
                 )
               }
               TextButton(
                 onClick = {
-                  if (adjustSubMode == AdjustSubMode.MARKERS) {
+                  if (fineTuneSubMode == FineTuneSubMode.MARKERS) {
                     onResetMarkersToAuto()
                   } else {
                     onRigAdjustmentChange(FaceRigAdjustment())
@@ -507,14 +621,9 @@ fun FaceRigDebugScreen(
                 },
                 modifier = Modifier.testTag("reset_rig_adjust_btn"),
               ) {
-                Icon(
-                  imageVector = Icons.Rounded.AutoFixHigh,
-                  contentDescription = null,
-                  modifier = Modifier.size(16.dp).padding(end = 4.dp),
-                )
                 Text(
                   text =
-                    if (adjustSubMode == AdjustSubMode.MARKERS) {
+                    if (fineTuneSubMode == FineTuneSubMode.MARKERS) {
                       stringResource(R.string.facerig_marker_auto_reset)
                     } else {
                       stringResource(R.string.facerig_adjust_reset)
@@ -523,54 +632,16 @@ fun FaceRigDebugScreen(
               }
             }
 
-            if (adjustSubMode == AdjustSubMode.MARKERS) {
-              val markerLabels =
-                listOf(
-                  stringResource(R.string.facerig_marker_eye_l),
-                  stringResource(R.string.facerig_marker_eye_r),
-                  stringResource(R.string.facerig_marker_nose),
-                  stringResource(R.string.facerig_marker_mouth_l),
-                  stringResource(R.string.facerig_marker_mouth_r),
-                  stringResource(R.string.facerig_marker_chin),
-                )
-
-              Row(
-                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-              ) {
-                FilterChip(
-                  selected = editMarkersOn3D,
-                  onClick = { editMarkersOn3D = !editMarkersOn3D },
-                  leadingIcon = {
-                    Icon(
-                      imageVector = Icons.Rounded.TouchApp,
-                      contentDescription = null,
-                      modifier = Modifier.size(16.dp),
-                    )
-                  },
-                  label = { Text(stringResource(R.string.facerig_marker_drag_toggle)) },
-                  modifier = Modifier.testTag("marker_drag_3d_chip"),
-                )
-                markerLabels.forEachIndexed { idx, label ->
-                  FilterChip(
-                    selected = selectedMarkerIndex == idx,
-                    onClick = { selectedMarkerIndex = idx },
-                    label = { Text(label) },
-                    modifier = Modifier.testTag("marker_chip_$idx"),
-                  )
-                }
-              }
-
-              val currentPts = snapshot.markers.toList()
-              val activePt = currentPts[selectedMarkerIndex.coerceIn(0, 5)]
+            if (fineTuneSubMode == FineTuneSubMode.MARKERS) {
+              val currentPts = snapshot.markers.toFullList()
+              val activePt = currentPts[selectedMarkerIndex.coerceIn(0, currentPts.lastIndex)]
               val headC = engine.headCenter
-              val minX = headC.x - 0.50f
-              val maxX = headC.x + 0.50f
-              val minY = headC.y - 0.65f
-              val maxY = headC.y + 0.25f
-              val minZ = headC.z - 0.60f
-              val maxZ = headC.z + 0.60f
+              val minX = headC.x - 0.55f
+              val maxX = headC.x + 0.55f
+              val minY = headC.y - 0.70f
+              val maxY = headC.y + 0.45f
+              val minZ = headC.z - 0.65f
+              val maxZ = headC.z + 0.65f
 
               AdjustmentSliderRow(
                 label = stringResource(R.string.facerig_marker_x, activePt.x),
@@ -578,9 +649,14 @@ fun FaceRigDebugScreen(
                 valueRange = minX..maxX,
                 tag = "slider_marker_x",
                 onValueChange = { nx ->
-                  val updated = currentPts.toMutableList()
-                  updated[selectedMarkerIndex] = activePt.copy(x = nx)
-                  onMarkersChange(FaceMarkers.fromList(updated))
+                  onMarkersChange(
+                    snapshot.markers.withPoint(
+                      index = selectedMarkerIndex,
+                      point = activePt.copy(x = nx),
+                      symmetric = symmetryEnabled,
+                      centerX = headC.x,
+                    ),
+                  )
                 },
               )
               AdjustmentSliderRow(
@@ -589,9 +665,14 @@ fun FaceRigDebugScreen(
                 valueRange = minY..maxY,
                 tag = "slider_marker_y",
                 onValueChange = { ny ->
-                  val updated = currentPts.toMutableList()
-                  updated[selectedMarkerIndex] = activePt.copy(y = ny)
-                  onMarkersChange(FaceMarkers.fromList(updated))
+                  onMarkersChange(
+                    snapshot.markers.withPoint(
+                      index = selectedMarkerIndex,
+                      point = activePt.copy(y = ny),
+                      symmetric = symmetryEnabled,
+                      centerX = headC.x,
+                    ),
+                  )
                 },
               )
               AdjustmentSliderRow(
@@ -600,9 +681,14 @@ fun FaceRigDebugScreen(
                 valueRange = minZ..maxZ,
                 tag = "slider_marker_z",
                 onValueChange = { nz ->
-                  val updated = currentPts.toMutableList()
-                  updated[selectedMarkerIndex] = activePt.copy(z = nz)
-                  onMarkersChange(FaceMarkers.fromList(updated))
+                  onMarkersChange(
+                    snapshot.markers.withPoint(
+                      index = selectedMarkerIndex,
+                      point = activePt.copy(z = nz),
+                      symmetric = symmetryEnabled,
+                      centerX = headC.x,
+                    ),
+                  )
                 },
               )
             } else {
@@ -642,65 +728,183 @@ fun FaceRigDebugScreen(
       Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.94f),
         tonalElevation = 6.dp,
       ) {
         Column(
           modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
           verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-          if (snapshot.isCustomModel) {
-            OutlinedButton(
-              onClick = onResetToTestHead,
-              enabled = !isImportingModel,
-              modifier = Modifier.heightIn(min = 48.dp).testTag("reset_test_head_btn"),
-              contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+          // Segmented Setup / Animate switch
+          SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+            SegmentedButton(
+              selected = activeSubTab == StudioSubTab.RIG_SETUP,
+              onClick = { activeSubTab = StudioSubTab.RIG_SETUP },
+              shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+              icon = { Icon(Icons.Rounded.Tune, contentDescription = null, modifier = Modifier.size(16.dp)) },
+              modifier = Modifier.testTag("subtab_rig_setup"),
             ) {
-              Icon(
-                imageVector = Icons.Rounded.RestartAlt,
-                contentDescription = null,
-                modifier = Modifier.size(18.dp).padding(end = 4.dp),
-              )
-              Text(text = stringResource(R.string.facerig_btn_reset_test_head))
+              Text(stringResource(R.string.facerig_tab_setup), style = MaterialTheme.typography.labelLarge)
+            }
+            SegmentedButton(
+              selected = activeSubTab == StudioSubTab.ANIMATION,
+              onClick = { activeSubTab = StudioSubTab.ANIMATION },
+              shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+              icon = { Icon(Icons.Rounded.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp)) },
+              modifier = Modifier.testTag("subtab_animation"),
+            ) {
+              Text(stringResource(R.string.facerig_tab_animate), style = MaterialTheme.typography.labelLarge)
             }
           }
 
-          Text(
-            text = stringResource(R.string.facerig_animations_title),
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-          )
+          if (activeSubTab == StudioSubTab.RIG_SETUP) {
+            // Contextual guide banner explaining what & where to place
+            Surface(
+              shape = RoundedCornerShape(12.dp),
+              color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+            ) {
+              Text(
+                text = guideTextForMarker(selectedMarkerIndex),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 7.dp),
+              )
+            }
 
-          Row(
-            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-          ) {
-            DebugAnimationType.entries.forEach { animType ->
-              val selected = snapshot.selectedAnimation == animType
-              val label = localizedAnimationLabel(animType)
-              if (selected) {
-                Button(
-                  onClick = { engine.selectAnimation(animType) },
-                  modifier = Modifier.heightIn(min = 48.dp).testTag("anim_btn_${animType.key}"),
-                  contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-                  colors =
-                    ButtonDefaults.buttonColors(
-                      containerColor = MaterialTheme.colorScheme.primary,
-                      contentColor = MaterialTheme.colorScheme.onPrimary,
-                    ),
-                ) {
-                  Text(
-                    text = label,
-                    fontWeight = FontWeight.SemiBold,
-                  )
-                }
+            // Landmark zone chips (6 clean symmetric zones or all 10 when symmetry is off)
+            val zoneEntries =
+              if (symmetryEnabled) {
+                listOf(
+                  FaceMarkers.IDX_EYE_L to stringResource(R.string.facerig_marker_eye_l).removeSuffix(" L"),
+                  FaceMarkers.IDX_BROW_L to stringResource(R.string.facerig_marker_brow_l).removeSuffix(" L"),
+                  FaceMarkers.IDX_NOSE to stringResource(R.string.facerig_marker_nose),
+                  FaceMarkers.IDX_MOUTH_L to stringResource(R.string.facerig_marker_mouth_l).removeSuffix(" L"),
+                  FaceMarkers.IDX_CHIN to stringResource(R.string.facerig_marker_chin),
+                  FaceMarkers.IDX_EAR_L to stringResource(R.string.facerig_marker_ear_l).removeSuffix(" L"),
+                )
               } else {
-                OutlinedButton(
-                  onClick = { engine.selectAnimation(animType) },
-                  modifier = Modifier.heightIn(min = 48.dp).testTag("anim_btn_${animType.key}"),
-                  contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
-                ) {
-                  Text(text = label)
+                listOf(
+                  FaceMarkers.IDX_EYE_L to stringResource(R.string.facerig_marker_eye_l),
+                  FaceMarkers.IDX_EYE_R to stringResource(R.string.facerig_marker_eye_r),
+                  FaceMarkers.IDX_BROW_L to stringResource(R.string.facerig_marker_brow_l),
+                  FaceMarkers.IDX_BROW_R to stringResource(R.string.facerig_marker_brow_r),
+                  FaceMarkers.IDX_NOSE to stringResource(R.string.facerig_marker_nose),
+                  FaceMarkers.IDX_MOUTH_L to stringResource(R.string.facerig_marker_mouth_l),
+                  FaceMarkers.IDX_MOUTH_R to stringResource(R.string.facerig_marker_mouth_r),
+                  FaceMarkers.IDX_CHIN to stringResource(R.string.facerig_marker_chin),
+                  FaceMarkers.IDX_EAR_L to stringResource(R.string.facerig_marker_ear_l),
+                  FaceMarkers.IDX_EAR_R to stringResource(R.string.facerig_marker_ear_r),
+                )
+              }
+
+            Row(
+              modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+              horizontalArrangement = Arrangement.spacedBy(6.dp),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              zoneEntries.forEach { (idx, label) ->
+                val isSelected =
+                  selectedMarkerIndex == idx ||
+                    (symmetryEnabled && isMirrorPair(selectedMarkerIndex, idx))
+                FilterChip(
+                  selected = isSelected,
+                  onClick = { selectedMarkerIndex = idx },
+                  label = { Text(label) },
+                  modifier = Modifier.testTag("marker_chip_$idx"),
+                )
+              }
+            }
+
+            // Helpful toggles: Symmetry L↔R, Snap to Mesh, Auto-fit, Fine-tune sliders
+            Row(
+              modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+              horizontalArrangement = Arrangement.spacedBy(6.dp),
+              verticalAlignment = Alignment.CenterVertically,
+            ) {
+              FilterChip(
+                selected = symmetryEnabled,
+                onClick = { symmetryEnabled = !symmetryEnabled },
+                leadingIcon = {
+                  Icon(Icons.Rounded.CompareArrows, contentDescription = null, modifier = Modifier.size(16.dp))
+                },
+                label = { Text(stringResource(R.string.facerig_symmetry_lr)) },
+                modifier = Modifier.testTag("symmetry_toggle_chip"),
+              )
+              FilterChip(
+                selected = surfaceSnapEnabled,
+                onClick = { surfaceSnapEnabled = !surfaceSnapEnabled },
+                leadingIcon = {
+                  Icon(Icons.Rounded.MyLocation, contentDescription = null, modifier = Modifier.size(16.dp))
+                },
+                label = { Text(stringResource(R.string.facerig_surface_snap)) },
+                modifier = Modifier.testTag("snap_toggle_chip"),
+              )
+              OutlinedButton(
+                onClick = {
+                  onRigAdjustmentChange(FaceRigAdjustment())
+                  onResetMarkersToAuto()
+                },
+                modifier = Modifier.heightIn(min = 48.dp).testTag("auto_fit_btn"),
+                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+              ) {
+                Icon(Icons.Rounded.AutoFixHigh, contentDescription = null, modifier = Modifier.size(16.dp).padding(end = 4.dp))
+                Text(stringResource(R.string.facerig_marker_auto_reset), style = MaterialTheme.typography.labelMedium)
+              }
+              FilterChip(
+                selected = showFineTune,
+                onClick = { showFineTune = !showFineTune },
+                leadingIcon = {
+                  Icon(Icons.Rounded.Straighten, contentDescription = null, modifier = Modifier.size(16.dp))
+                },
+                label = { Text(stringResource(R.string.facerig_fine_tune)) },
+                modifier = Modifier.testTag("toggle_rig_adjust_btn"),
+              )
+            }
+          } else {
+            if (snapshot.isCustomModel) {
+              OutlinedButton(
+                onClick = onResetToTestHead,
+                enabled = !isImportingModel,
+                modifier = Modifier.heightIn(min = 48.dp).testTag("reset_test_head_btn"),
+                contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+              ) {
+                Icon(
+                  imageVector = Icons.Rounded.RestartAlt,
+                  contentDescription = null,
+                  modifier = Modifier.size(18.dp).padding(end = 4.dp),
+                )
+                Text(text = stringResource(R.string.facerig_btn_reset_test_head))
+              }
+            }
+
+            Row(
+              modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+              horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+              DebugAnimationType.entries.forEach { animType ->
+                val selected = snapshot.selectedAnimation == animType
+                val label = localizedAnimationLabel(animType)
+                if (selected) {
+                  Button(
+                    onClick = { engine.selectAnimation(animType) },
+                    modifier = Modifier.heightIn(min = 48.dp).testTag("anim_btn_${animType.key}"),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                    colors =
+                      ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        contentColor = MaterialTheme.colorScheme.onPrimary,
+                      ),
+                  ) {
+                    Text(text = label, fontWeight = FontWeight.SemiBold)
+                  }
+                } else {
+                  OutlinedButton(
+                    onClick = { engine.selectAnimation(animType) },
+                    modifier = Modifier.heightIn(min = 48.dp).testTag("anim_btn_${animType.key}"),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                  ) {
+                    Text(text = label)
+                  }
                 }
               }
             }
@@ -710,6 +914,28 @@ fun FaceRigDebugScreen(
     }
   }
 }
+
+private fun isMirrorPair(a: Int, b: Int): Boolean =
+  (a == FaceMarkers.IDX_EYE_L && b == FaceMarkers.IDX_EYE_R) ||
+    (a == FaceMarkers.IDX_EYE_R && b == FaceMarkers.IDX_EYE_L) ||
+    (a == FaceMarkers.IDX_MOUTH_L && b == FaceMarkers.IDX_MOUTH_R) ||
+    (a == FaceMarkers.IDX_MOUTH_R && b == FaceMarkers.IDX_MOUTH_L) ||
+    (a == FaceMarkers.IDX_BROW_L && b == FaceMarkers.IDX_BROW_R) ||
+    (a == FaceMarkers.IDX_BROW_R && b == FaceMarkers.IDX_BROW_L) ||
+    (a == FaceMarkers.IDX_EAR_L && b == FaceMarkers.IDX_EAR_R) ||
+    (a == FaceMarkers.IDX_EAR_R && b == FaceMarkers.IDX_EAR_L)
+
+@Composable
+private fun guideTextForMarker(markerIndex: Int): String =
+  when (markerIndex) {
+    FaceMarkers.IDX_EYE_L, FaceMarkers.IDX_EYE_R -> stringResource(R.string.facerig_guide_eye)
+    FaceMarkers.IDX_NOSE -> stringResource(R.string.facerig_guide_nose)
+    FaceMarkers.IDX_MOUTH_L, FaceMarkers.IDX_MOUTH_R -> stringResource(R.string.facerig_guide_mouth)
+    FaceMarkers.IDX_CHIN -> stringResource(R.string.facerig_guide_chin)
+    FaceMarkers.IDX_BROW_L, FaceMarkers.IDX_BROW_R -> stringResource(R.string.facerig_guide_brow)
+    FaceMarkers.IDX_EAR_L, FaceMarkers.IDX_EAR_R -> stringResource(R.string.facerig_guide_ear)
+    else -> stringResource(R.string.facerig_guide_nose)
+  }
 
 @Composable
 private fun AdjustmentSliderRow(

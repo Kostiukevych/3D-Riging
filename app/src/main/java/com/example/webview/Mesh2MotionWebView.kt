@@ -157,6 +157,11 @@ object Mesh2MotionWebViewFactory {
             return true
           }
 
+          override fun onPageCommitVisible(view: WebView, url: String?) {
+            super.onPageCommitVisible(view, url)
+            view.evaluateJavascript(translatorScript, null)
+          }
+
           override fun onPageFinished(view: WebView, url: String?) {
             super.onPageFinished(view, url)
             view.evaluateJavascript(BlobDownloadBridge.INJECT_SCRIPT, null)

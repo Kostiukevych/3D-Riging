@@ -221,13 +221,24 @@ class MainActivity : ComponentActivity() {
                 faceDebugSnapshotState.value = updated
               }
           },
-          onMarkerDragDelta = { markerIdx, deltaBlender ->
+          onMarkerDragDelta = { markerIdx, deltaBlender, symmetric ->
             adjustJob?.cancel()
             adjustJob =
               lifecycleScope.launch {
                 val updated =
                   withContext(Dispatchers.Default) {
-                    rigEngine.moveMarker(markerIdx, deltaBlender)
+                    rigEngine.moveMarker(markerIdx, deltaBlender, symmetric = symmetric)
+                  }
+                faceDebugSnapshotState.value = updated
+              }
+          },
+          onMarkerPlaceAt = { markerIdx, targetBlender, symmetric ->
+            adjustJob?.cancel()
+            adjustJob =
+              lifecycleScope.launch {
+                val updated =
+                  withContext(Dispatchers.Default) {
+                    rigEngine.placeMarkerAt(markerIdx, targetBlender, symmetric = symmetric)
                   }
                 faceDebugSnapshotState.value = updated
               }

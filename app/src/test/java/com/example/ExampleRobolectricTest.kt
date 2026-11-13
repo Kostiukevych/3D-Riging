@@ -37,8 +37,16 @@ class ExampleRobolectricTest {
   fun `read string from context`() {
     val context = ApplicationProvider.getApplicationContext<Context>()
     val appName = context.getString(R.string.app_name)
-    assertEquals("Mesh2Motion", appName)
-    assertEquals("Обзор", JSONObject(Mesh2MotionTranslator.loadDictionaryJson(context)).getString("Explore"))
+    assertEquals("3D Ot Dimona", appName)
+    val dictJson = Mesh2MotionTranslator.loadDictionaryJson(context)
+    val dict = JSONObject(dictJson)
+    assertEquals("Обзор", dict.getString("Explore"))
+    assertEquals("Редактировать скелет", dict.getString("Edit Skeleton"))
+    assertEquals("Экспорт GLB", dict.getString("Export GLB"))
+    assertTrue(dict.length() >= 200)
+    val script = Mesh2MotionTranslator.buildInjectScript(dictJson)
+    assertTrue(script.contains("MutationObserver"))
+    assertTrue(script.contains("Шаг "))
   }
 
   @Test
@@ -76,6 +84,20 @@ class ExampleRobolectricTest {
     val manualSnap = engine.setMarkers(shifted)
     assertTrue(manualSnap.hasManualMarkers)
     assertEquals(shifted.noseTip.z, engine.fittedFaceBones.first { it.name == "nose.003" }.head.z, 1e-3f)
+
+    // Symmetric left-eye placement mirrors right eye around headCenter.x
+    val symTarget = Vec3(engine.headCenter.x + 0.14f, snapshot1.markers.eyeL.y, snapshot1.markers.eyeL.z + 0.02f)
+    val symSnap = engine.placeMarkerAt(FaceMarkers.IDX_EYE_L, symTarget, symmetric = true)
+    assertEquals(symTarget.x, symSnap.markers.eyeL.x, 1e-4f)
+    assertEquals(2f * engine.headCenter.x - symTarget.x, symSnap.markers.eyeR.x, 1e-4f)
+    assertEquals(symTarget.z, symSnap.markers.eyeR.z, 1e-4f)
+
+    // Raycast from front of nose hits the head mesh surface
+    val hit = engine.raycastHeadSurface(
+      rayOrigin = Vec3(engine.headCenter.x, engine.headCenter.y - 2.0f, engine.headCenter.z),
+      rayDir = Vec3(0f, 1f, 0f),
+    )
+    assertNotNull(hit)
 
     val resetSnap = engine.resetMarkersToAuto()
     assertFalse(resetSnap.hasManualMarkers)

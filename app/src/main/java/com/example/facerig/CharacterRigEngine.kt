@@ -300,14 +300,34 @@ class CharacterRigEngine(
     }
   }
 
-  fun moveMarker(markerIndex: Int, deltaBlender: Vec3): FaceDebugSnapshot {
+  fun moveMarker(markerIndex: Int, deltaBlender: Vec3, symmetric: Boolean = false): FaceDebugSnapshot {
     synchronized(stateLock) {
-      val list = currentMarkers.toList().toMutableList()
+      val list = currentMarkers.toFullList()
       if (markerIndex in list.indices) {
-        list[markerIndex] = list[markerIndex] + deltaBlender
-        val updatedMarkers = FaceMarkers.fromList(list)
+        val nextPt = list[markerIndex] + deltaBlender
+        val updatedMarkers =
+          currentMarkers.withPoint(
+            index = markerIndex,
+            point = nextPt,
+            symmetric = symmetric,
+            centerX = headCenter.x,
+          )
         bindMeshInternal(mesh, isCustomModel, rigAdjustment, manualMarkers = updatedMarkers)
       }
+      return stepLocked(0f)
+    }
+  }
+
+  fun placeMarkerAt(markerIndex: Int, targetBlender: Vec3, symmetric: Boolean = true): FaceDebugSnapshot {
+    synchronized(stateLock) {
+      val updatedMarkers =
+        currentMarkers.withPoint(
+          index = markerIndex,
+          point = targetBlender,
+          symmetric = symmetric,
+          centerX = headCenter.x,
+        )
+      bindMeshInternal(mesh, isCustomModel, rigAdjustment, manualMarkers = updatedMarkers)
       return stepLocked(0f)
     }
   }
@@ -317,6 +337,87 @@ class CharacterRigEngine(
       bindMeshInternal(mesh, isCustomModel, rigAdjustment, manualMarkers = null)
       return stepLocked(0f)
     }
+  }
+
+  /**
+   * Raycast against the current rest head triangles in Blender coordinates.
+   * Returns hit point nudged slightly outward along triangle normal so markers sit on the skin surface.
+   */
+  fun raycastHeadSurface(rayOrigin: Vec3, rayDir: Vec3, surfaceOffset: Float = 0.006f): Vec3? {
+    val currentMesh = mesh
+    val pos = currentMesh.restPositions
+    val idx = currentMesh.triangleIndices
+    val headTris = currentMesh.isHeadTriangle
+    val dirLen = rayDir.length().coerceAtLeast(1e-6f)
+    val dx = rayDir.x / dirLen
+    val dy = rayDir.y / dirLen
+    val dz = rayDir.z / dirLen
+
+    var bestT = Float.POSITIVE_INFINITY
+    var bestNx = 0f
+    var bestNy = -1f
+    var bestNz = 0f
+
+    val triCount = idx.size / 3
+    for (t in 0 until triCount) {
+      if (t < headTris.size && !headTris[t]) continue
+      val ia = idx[t * 3].toInt() and 0xFFFF
+      val ib = idx[t * 3 + 1].toInt() and 0xFFFF
+      val ic = idx[t * 3 + 2].toInt() and 0xFFFF
+
+      val ax = pos[ia * 3]; val ay = pos[ia * 3 + 1]; val az = pos[ia * 3 + 2]
+      val bx = pos[ib * 3]; val by = pos[ib * 3 + 1]; val bz = pos[ib * 3 + 2]
+      val cx = pos[ic * 3]; val cy = pos[ic * 3 + 1]; val cz = pos[ic * 3 + 2]
+
+      val e1x = bx - ax; val e1y = by - ay; val e1z = bz - az
+      val e2x = cx - ax; val e2y = cy - ay; val e2z = cz - az
+
+      // pvec = cross(dir, e2)
+      val px = dy * e2z - dz * e2y
+      val py = dz * e2x - dx * e2z
+      val pz = dx * e2y - dy * e2x
+
+      val det = e1x * px + e1y * py + e1z * pz
+      if (kotlin.math.abs(det) < 1e-6f) continue
+      val invDet = 1f / det
+
+      val tx = rayOrigin.x - ax
+      val ty = rayOrigin.y - ay
+      val tz = rayOrigin.z - az
+
+      val u = (tx * px + ty * py + tz * pz) * invDet
+      if (u < 0f || u > 1f) continue
+
+      // qvec = cross(tvec, e1)
+      val qx = ty * e1z - tz * e1y
+      val qy = tz * e1x - tx * e1z
+      val qz = tx * e1y - ty * e1x
+
+      val v = (dx * qx + dy * qy + dz * qz) * invDet
+      if (v < 0f || u + v > 1f) continue
+
+      val dist = (e2x * qx + e2y * qy + e2z * qz) * invDet
+      if (dist > 0.01f && dist < bestT) {
+        bestT = dist
+        // Normal = cross(e1, e2), flip toward ray origin if needed
+        var nx = e1y * e2z - e1z * e2y
+        var ny = e1z * e2x - e1x * e2z
+        var nz = e1x * e2y - e1y * e2x
+        val nLen = kotlin.math.sqrt(nx * nx + ny * ny + nz * nz).coerceAtLeast(1e-6f)
+        nx /= nLen; ny /= nLen; nz /= nLen
+        if (nx * dx + ny * dy + nz * dz > 0f) {
+          nx = -nx; ny = -ny; nz = -nz
+        }
+        bestNx = nx; bestNy = ny; bestNz = nz
+      }
+    }
+
+    if (!bestT.isFinite()) return null
+    return Vec3(
+      rayOrigin.x + dx * bestT + bestNx * surfaceOffset,
+      rayOrigin.y + dy * bestT + bestNy * surfaceOffset,
+      rayOrigin.z + dz * bestT + bestNz * surfaceOffset,
+    )
   }
 
   private fun bindMeshInternal(
@@ -330,16 +431,27 @@ class CharacterRigEngine(
     rigAdjustment = adjustment
 
     val baseCenter = (targetMesh.headBboxMin + targetMesh.headBboxMax) * 0.5f
-    val baseHalf = (targetMesh.headBboxMax - targetMesh.headBboxMin) * 0.5f * adjustment.scale.coerceIn(0.4f, 2.0f)
-    val adjustedCenter =
-      baseCenter + Vec3(adjustment.offsetX, adjustment.offsetY, adjustment.offsetZ)
+    val adjScale = adjustment.scale.coerceIn(0.4f, 2.0f)
+    val baseHalf = (targetMesh.headBboxMax - targetMesh.headBboxMin) * 0.5f * adjScale
+    val adjOffset = Vec3(adjustment.offsetX, adjustment.offsetY, adjustment.offsetZ)
+    val adjustedCenter = baseCenter + adjOffset
     val adjustedMin = adjustedCenter - baseHalf
     val adjustedMax = adjustedCenter + baseHalf
 
     headSize = adjustedMax - adjustedMin
     headCenter = adjustedCenter
 
-    autoFittedFaceBones = FaceFit.autoFit(adjustedMin, adjustedMax)
+    val meshConformed = FaceFit.autoFitToMesh(targetMesh)
+    autoFittedFaceBones =
+      if (adjustment == FaceRigAdjustment()) {
+        meshConformed
+      } else {
+        meshConformed.map { bone ->
+          fun xform(p: Vec3) = (p - baseCenter) * adjScale + baseCenter + adjOffset
+          bone.copy(head = xform(bone.head), tail = xform(bone.tail))
+        }
+      }
+
     if (manualMarkers != null) {
       currentMarkers = manualMarkers
       hasManualMarkers = true

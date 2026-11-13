@@ -1,11 +1,11 @@
 <resources>
-    <string name="app_name">Mesh2Motion</string>
+    <string name="app_name">3D Ot Dimona</string>
     <string name="loading_studio">Loading 3D Rigging Studio…</string>
     <string name="error_loading_title">Unable to load Mesh2Motion</string>
     <string name="error_loading_subtitle">Check that the local web bundle is available in assets and try reloading the workspace.</string>
     <string name="action_reload">Reload Studio</string>
     <string name="action_upload_hint">Import 3D Model</string>
-    <string name="exit_dialog_title">Leave Mesh2Motion?</string>
+    <string name="exit_dialog_title">Leave 3D Ot Dimona?</string>
     <string name="exit_dialog_message">Unsaved rigging or animation progress in the current WebGL scene will be lost.</string>
     <string name="exit_dialog_confirm">Exit</string>
     <string name="exit_dialog_cancel">Stay</string>
@@ -13,7 +13,7 @@
     <string name="download_failed_toast">Failed to save file: %1$s</string>
     <string name="file_chooser_title">Select 3D Model (.glb, .gltf, .fbx, .obj, .dae)</string>
     <string name="cd_reload_studio">Reload 3D studio</string>
-    <string name="cd_studio_badge">Mesh2Motion studio status</string>
+    <string name="cd_studio_badge">3D Ot Dimona studio status</string>
     <string name="tab_face_rig_debug">Face Rig Debug</string>
     <string name="tab_web_studio">Mesh2Motion Web</string>
     <string name="facerig_animations_title">Face Rig Animations</string>
@@ -65,6 +65,24 @@
     <string name="facerig_marker_x">X: %1$+.3f</string>
     <string name="facerig_marker_y">Y: %1$+.3f</string>
     <string name="facerig_marker_z">Z: %1$+.3f</string>
-    <string name="facerig_fit_mode_manual">Fit: Manual (6 markers)</string>
-    <string name="facerig_fit_mode_auto">Fit: Auto (FaceFit)</string>
+    <string name="facerig_fit_mode_manual">Fit: Manual (markers)</string>
+    <string name="facerig_fit_mode_auto">Fit: Auto (mesh fit)</string>
+    <string name="facerig_tab_setup">Rig Setup</string>
+    <string name="facerig_tab_animate">Animate</string>
+    <string name="facerig_cam_front">Front</string>
+    <string name="facerig_cam_three_quarter">3/4</string>
+    <string name="facerig_cam_side">Side</string>
+    <string name="facerig_symmetry_lr">Symmetry L↔R</string>
+    <string name="facerig_surface_snap">Snap to Mesh</string>
+    <string name="facerig_fine_tune">Fine-tune</string>
+    <string name="facerig_marker_brow_l">Brow L</string>
+    <string name="facerig_marker_brow_r">Brow R</string>
+    <string name="facerig_marker_ear_l">Ear L</string>
+    <string name="facerig_marker_ear_r">Ear R</string>
+    <string name="facerig_guide_eye">Drag pin onto the eye pupil center — eyelids align around it.</string>
+    <string name="facerig_guide_nose">Place on the nose tip. Use Side view to check forward depth.</string>
+    <string name="facerig_guide_mouth">Place at the mouth corner. With L↔R Symmetry, both sides move together.</string>
+    <string name="facerig_guide_chin">Place on the bottom edge of the chin to align the jaw.</string>
+    <string name="facerig_guide_brow">Place at the center of the brow arch — forehead bones follow it.</string>
+    <string name="facerig_guide_ear">Place at the center of the ear (easiest in Side view).</string>
 </resources>
