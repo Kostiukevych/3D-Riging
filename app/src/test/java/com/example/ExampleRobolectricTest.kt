@@ -5,6 +5,7 @@ import android.util.Base64
 import androidx.test.core.app.ApplicationProvider
 import com.example.facerig.CharacterObjLoader
 import com.example.facerig.CharacterRigEngine
+import com.example.facerig.CustomModelLoader
 import com.example.facerig.DebugAnimationType
 import com.example.facerig.FaceFit
 import com.example.facerig.FaceMarkers
@@ -52,6 +53,10 @@ class ExampleRobolectricTest {
   @Test
   fun `character rig engine validates face rig, loads vertex-colored bust, and runs FaceFit auto and manual`() {
     val context = ApplicationProvider.getApplicationContext<Context>()
+    val defaultMesh = CustomModelLoader.loadDefaultAssetModel(context)
+    assertTrue(defaultMesh.restPositions.isNotEmpty())
+    assertTrue(defaultMesh.triangleIndices.isNotEmpty())
+
     val mesh = CharacterObjLoader.loadFromAssets(context)
     assertNotNull(mesh.vertexColors)
     assertEquals(mesh.restPositions.size, mesh.vertexColors!!.size)

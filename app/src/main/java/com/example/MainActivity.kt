@@ -23,7 +23,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.lifecycleScope
 import com.example.facerig.CharacterMeshData
-import com.example.facerig.CharacterObjLoader
 import com.example.facerig.CharacterRigEngine
 import com.example.facerig.CustomModelLoader
 import com.example.facerig.CustomModelStorage
@@ -294,7 +293,7 @@ class MainActivity : ComponentActivity() {
         modelLoadError = getString(R.string.facerig_custom_model_failed, err.localizedMessage ?: ext)
       }
     }
-    return CharacterObjLoader.loadFromAssets(this) to false
+    return CustomModelLoader.loadDefaultAssetModel(this) to false
   }
 
   private fun importCustomModel(uri: Uri) {
@@ -333,7 +332,7 @@ class MainActivity : ComponentActivity() {
         val snapshot =
           withContext(Dispatchers.IO) {
             CustomModelStorage.clearSavedModel(this@MainActivity)
-            val defaultMesh = CharacterObjLoader.loadFromAssets(this@MainActivity)
+            val defaultMesh = CustomModelLoader.loadDefaultAssetModel(this@MainActivity)
             rigEngine.replaceMesh(defaultMesh, custom = false)
           }
         rigAdjustment = FaceRigAdjustment()

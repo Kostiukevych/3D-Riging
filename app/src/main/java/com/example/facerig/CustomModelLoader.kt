@@ -101,15 +101,45 @@ object CustomModelStorage {
 }
 
 object CustomModelLoader {
+  private val bundledDefaultCandidates =
+    listOf(
+      "models/Trevor.fbx" to "fbx",
+      "models/trevor.fbx" to "fbx",
+      "models/Trevor.glb" to "glb",
+      "models/trevor.glb" to "glb",
+    )
+
   fun loadFromFile(file: File, extHint: String? = null): CharacterMeshData {
     val bytes = file.readBytes()
     val ext = (extHint ?: CustomModelStorage.detectFormatExtension(file.name, bytes)).lowercase()
-    return when (ext) {
+    return parseBytes(bytes, ext)
+  }
+
+  fun parseBytes(bytes: ByteArray, ext: String): CharacterMeshData =
+    when (ext.lowercase()) {
       "glb" -> GlbMeshLoader.parseGlb(bytes)
       "gltf" -> GlbMeshLoader.parseGltf(bytes)
       "fbx" -> FbxMeshLoader.parseFbx(bytes)
       else -> throw IllegalArgumentException("Неподдерживаемый формат: .$ext")
     }
+
+  fun loadDefaultAssetModel(context: Context): CharacterMeshData {
+    val assetFiles = runCatching { context.assets.list("models")?.toSet() ?: emptySet() }.getOrDefault(emptySet())
+    for ((assetPath, ext) in bundledDefaultCandidates) {
+      val fileName = assetPath.substringAfterLast('/')
+      if (fileName !in assetFiles) continue
+      val parsed =
+        runCatching {
+          context.assets.open(assetPath).use { stream ->
+            parseBytes(stream.readBytes(), ext)
+          }
+        }
+      if (parsed.isSuccess) {
+        return parsed.getOrThrow()
+      }
+      android.util.Log.w("CustomModelLoader", "Failed to load bundled $assetPath, falling back", parsed.exceptionOrNull())
+    }
+    return CharacterObjLoader.loadFromAssets(context)
   }
 }
 
