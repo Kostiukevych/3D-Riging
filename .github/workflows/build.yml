@@ -8,7 +8,7 @@ on:
 
 jobs:
   build-apk:
-    name: Build Web Bundle & Signed Android APK
+    name: Build Offline Web Bundle & Signed Android APK
     runs-on: ubuntu-latest
 
     steps:
@@ -20,13 +20,14 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Clone & Build Mesh2Motion Web App
+      - name: Clone, Build & Localize Offline Mesh2Motion Web Bundle
         run: |
           git clone --depth 1 https://github.com/Mesh2Motion/mesh2motion-app.git temp_web
           cd temp_web
           npm ci || npm install
           npm run build -- --base=./ || npx vite build --base=./
           cd ..
+          python3 .github/scripts/localize_web_assets.py temp_web
           mkdir -p app/src/main/assets/www
           rm -rf app/src/main/assets/www/*
           cp -r temp_web/dist/* app/src/main/assets/www/

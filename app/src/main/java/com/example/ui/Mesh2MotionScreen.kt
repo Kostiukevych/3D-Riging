@@ -51,8 +51,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.example.R
+import com.example.Vec3
 import com.example.facerig.CharacterRigEngine
 import com.example.facerig.FaceDebugSnapshot
+import com.example.facerig.FaceMarkers
+import com.example.facerig.FaceRigAdjustment
 
 enum class StudioMode {
   FACE_RIG_DEBUG,
@@ -66,7 +69,17 @@ fun Mesh2MotionScreen(
   onModeSelected: (StudioMode) -> Unit,
   rigEngine: CharacterRigEngine,
   faceDebugSnapshot: FaceDebugSnapshot,
+  rigAdjustment: FaceRigAdjustment,
+  isImportingModel: Boolean,
+  modelLoadError: String?,
   onFaceSnapshotUpdate: (FaceDebugSnapshot) -> Unit,
+  onRigAdjustmentChange: (FaceRigAdjustment) -> Unit,
+  onMarkersChange: (FaceMarkers) -> Unit,
+  onMarkerDragDelta: (Int, Vec3) -> Unit,
+  onResetMarkersToAuto: () -> Unit,
+  onLoadCustomModel: () -> Unit,
+  onResetToTestHead: () -> Unit,
+  onDismissModelError: () -> Unit,
   webView: WebView,
   loadProgress: Int,
   isLoading: Boolean,
@@ -130,7 +143,17 @@ fun Mesh2MotionScreen(
         FaceRigDebugScreen(
           engine = rigEngine,
           snapshot = faceDebugSnapshot,
+          rigAdjustment = rigAdjustment,
+          isImportingModel = isImportingModel,
+          modelLoadError = modelLoadError,
           onSnapshotUpdate = onFaceSnapshotUpdate,
+          onRigAdjustmentChange = onRigAdjustmentChange,
+          onMarkersChange = onMarkersChange,
+          onMarkerDragDelta = onMarkerDragDelta,
+          onResetMarkersToAuto = onResetMarkersToAuto,
+          onLoadCustomModel = onLoadCustomModel,
+          onResetToTestHead = onResetToTestHead,
+          onDismissModelError = onDismissModelError,
           modifier = Modifier.fillMaxSize(),
         )
       } else {

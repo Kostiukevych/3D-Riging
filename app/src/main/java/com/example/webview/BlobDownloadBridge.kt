@@ -82,15 +82,29 @@ class BlobDownloadBridge(
             });
         };
 
+        function handlePossibleDownloadLink(el) {
+          if (!el || el.tagName !== 'A') return false;
+          var href = el.getAttribute('href') || el.href || '';
+          if (href.indexOf('blob:') === 0 || href.indexOf('data:') === 0) {
+            var filename = el.getAttribute('download') || 'mesh2motion_export.glb';
+            window.__m2mFetchBlobToAndroid(href, filename);
+            return true;
+          }
+          return false;
+        }
+
         var origAnchorClick = HTMLAnchorElement.prototype.click;
         HTMLAnchorElement.prototype.click = function() {
-          var href = this.getAttribute('href') || this.href || '';
-          if (href.indexOf('blob:') === 0 || href.indexOf('data:') === 0) {
-            var filename = this.getAttribute('download') || 'mesh2motion_export.glb';
-            window.__m2mFetchBlobToAndroid(href, filename);
-            return;
-          }
+          if (handlePossibleDownloadLink(this)) return;
           return origAnchorClick.apply(this, arguments);
+        };
+
+        var origDispatchEvent = EventTarget.prototype.dispatchEvent;
+        EventTarget.prototype.dispatchEvent = function(event) {
+          if (event && event.type === 'click' && this.tagName === 'A') {
+            if (handlePossibleDownloadLink(this)) return false;
+          }
+          return origDispatchEvent.apply(this, arguments);
         };
 
         document.addEventListener('click', function(event) {

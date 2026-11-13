@@ -5,6 +5,7 @@ import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
+import android.util.Log
 import android.webkit.ValueCallback
 import android.webkit.WebView
 import android.widget.Toast
@@ -15,14 +16,19 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.lifecycleScope
+import com.example.facerig.CharacterMeshData
 import com.example.facerig.CharacterObjLoader
 import com.example.facerig.CharacterRigEngine
+import com.example.facerig.CustomModelLoader
+import com.example.facerig.CustomModelStorage
 import com.example.facerig.FaceDebugSnapshot
+import com.example.facerig.FaceRigAdjustment
 import com.example.storage.ModelFileSaver
 import com.example.storage.SaveResult
 import com.example.ui.Mesh2MotionScreen
@@ -30,23 +36,34 @@ import com.example.ui.StudioMode
 import com.example.ui.theme.Mesh2MotionTheme
 import com.example.webview.BlobDownloadBridge
 import com.example.webview.Mesh2MotionWebViewFactory
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
+
+  companion object {
+    private const val TAG = "MainActivity"
+  }
 
   private var webView: WebView? = null
   private var filePathCallback: ValueCallback<Array<Uri>>? = null
   private var pendingLegacySave: SaveResult.RequiresDocumentPicker? = null
+  private var adjustJob: Job? = null
 
   private var activeMode by mutableStateOf(StudioMode.FACE_RIG_DEBUG)
   private var loadProgress by mutableIntStateOf(0)
   private var isLoading by mutableStateOf(true)
   private var loadError by mutableStateOf<String?>(null)
   private var showExitDialog by mutableStateOf(false)
+  private var isImportingModel by mutableStateOf(false)
+  private var modelLoadError by mutableStateOf<String?>(null)
+  private var rigAdjustment by mutableStateOf(FaceRigAdjustment())
   private val snackbarHostState = SnackbarHostState()
 
   private lateinit var rigEngine: CharacterRigEngine
-  private lateinit var faceDebugSnapshot: FaceDebugSnapshot
+  private lateinit var faceDebugSnapshotState: MutableState<FaceDebugSnapshot>
 
   private val fileChooserLauncher =
     registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -61,6 +78,13 @@ class MainActivity : ComponentActivity() {
 
       val uris = extractSelectedUris(result.data!!)
       callback.onReceiveValue(if (uris.isNotEmpty()) uris else null)
+    }
+
+  private val customModelPickerLauncher =
+    registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+      if (uri != null) {
+        importCustomModel(uri)
+      }
     }
 
   private val legacyDocumentSaverLauncher =
@@ -89,11 +113,9 @@ class MainActivity : ComponentActivity() {
       navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
     )
 
-    // Load character model, run FaceRigValidator.validate(), fitTo(), and skinWeights()
-    val characterMesh = CharacterObjLoader.loadFromAssets(this)
-    rigEngine = CharacterRigEngine(characterMesh)
-    var snapshotState by mutableStateOf(rigEngine.step(0f))
-    faceDebugSnapshot = snapshotState
+    val (initialMesh, isCustomInitial) = loadInitialCharacterMesh()
+    rigEngine = CharacterRigEngine(initialMesh, isCustomInitial)
+    faceDebugSnapshotState = mutableStateOf(rigEngine.step(0f))
 
     val blobBridge =
       BlobDownloadBridge(
@@ -172,11 +194,69 @@ class MainActivity : ComponentActivity() {
           activeMode = activeMode,
           onModeSelected = { activeMode = it },
           rigEngine = rigEngine,
-          faceDebugSnapshot = snapshotState,
-          onFaceSnapshotUpdate = { updated ->
-            snapshotState = updated
-            faceDebugSnapshot = updated
+          faceDebugSnapshot = faceDebugSnapshotState.value,
+          rigAdjustment = rigAdjustment,
+          isImportingModel = isImportingModel,
+          modelLoadError = modelLoadError,
+          onFaceSnapshotUpdate = { updated -> faceDebugSnapshotState.value = updated },
+          onRigAdjustmentChange = { nextAdj ->
+            rigAdjustment = nextAdj
+            adjustJob?.cancel()
+            adjustJob =
+              lifecycleScope.launch {
+                val updated =
+                  withContext(Dispatchers.Default) {
+                    rigEngine.updateRigAdjustment(nextAdj)
+                  }
+                faceDebugSnapshotState.value = updated
+              }
           },
+          onMarkersChange = { nextMarkers ->
+            adjustJob?.cancel()
+            adjustJob =
+              lifecycleScope.launch {
+                val updated =
+                  withContext(Dispatchers.Default) {
+                    rigEngine.setMarkers(nextMarkers)
+                  }
+                faceDebugSnapshotState.value = updated
+              }
+          },
+          onMarkerDragDelta = { markerIdx, deltaBlender ->
+            adjustJob?.cancel()
+            adjustJob =
+              lifecycleScope.launch {
+                val updated =
+                  withContext(Dispatchers.Default) {
+                    rigEngine.moveMarker(markerIdx, deltaBlender)
+                  }
+                faceDebugSnapshotState.value = updated
+              }
+          },
+          onResetMarkersToAuto = {
+            adjustJob?.cancel()
+            adjustJob =
+              lifecycleScope.launch {
+                val updated =
+                  withContext(Dispatchers.Default) {
+                    rigEngine.resetMarkersToAuto()
+                  }
+                faceDebugSnapshotState.value = updated
+              }
+          },
+          onLoadCustomModel = {
+            modelLoadError = null
+            customModelPickerLauncher.launch(
+              arrayOf(
+                "model/gltf-binary",
+                "model/gltf+json",
+                "application/octet-stream",
+                "*/*",
+              )
+            )
+          },
+          onResetToTestHead = { resetToDefaultTestHead() },
+          onDismissModelError = { modelLoadError = null },
           webView = createdWebView,
           loadProgress = loadProgress,
           isLoading = isLoading,
@@ -195,6 +275,74 @@ class MainActivity : ComponentActivity() {
           },
           onDismissExit = { showExitDialog = false },
         )
+      }
+    }
+  }
+
+  private fun loadInitialCharacterMesh(): Pair<CharacterMeshData, Boolean> {
+    val saved = CustomModelStorage.getSavedModelFile(this)
+    if (saved != null) {
+      val (file, ext) = saved
+      runCatching {
+        CustomModelLoader.loadFromFile(file, ext)
+      }.onSuccess { customMesh ->
+        Log.i(TAG, "Loaded persisted custom .$ext model from ${file.absolutePath}")
+        return customMesh to true
+      }.onFailure { err ->
+        Log.e(TAG, "Failed loading saved custom model, falling back to test head", err)
+        CustomModelStorage.clearSavedModel(this)
+        modelLoadError = getString(R.string.facerig_custom_model_failed, err.localizedMessage ?: ext)
+      }
+    }
+    return CharacterObjLoader.loadFromAssets(this) to false
+  }
+
+  private fun importCustomModel(uri: Uri) {
+    lifecycleScope.launch {
+      isImportingModel = true
+      modelLoadError = null
+      try {
+        val (mesh, updatedSnapshot) =
+          withContext(Dispatchers.IO) {
+            val (savedFile, ext) = CustomModelStorage.saveFromUri(this@MainActivity, uri)
+            val parsedMesh = CustomModelLoader.loadFromFile(savedFile, ext)
+            val snapshot = rigEngine.replaceMesh(parsedMesh, custom = true)
+            parsedMesh to snapshot
+          }
+        rigAdjustment = FaceRigAdjustment()
+        faceDebugSnapshotState.value = updatedSnapshot
+        val msg = getString(R.string.facerig_custom_model_loaded, mesh.restPositions.size / 3)
+        Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+        snackbarHostState.showSnackbar(msg)
+      } catch (e: Exception) {
+        Log.e(TAG, "Error importing custom 3D model", e)
+        CustomModelStorage.clearSavedModel(this@MainActivity)
+        val detail = e.localizedMessage ?: "Неизвестная ошибка формата"
+        modelLoadError = getString(R.string.facerig_custom_model_failed, detail)
+      } finally {
+        isImportingModel = false
+      }
+    }
+  }
+
+  private fun resetToDefaultTestHead() {
+    lifecycleScope.launch {
+      isImportingModel = true
+      modelLoadError = null
+      try {
+        val snapshot =
+          withContext(Dispatchers.IO) {
+            CustomModelStorage.clearSavedModel(this@MainActivity)
+            val defaultMesh = CharacterObjLoader.loadFromAssets(this@MainActivity)
+            rigEngine.replaceMesh(defaultMesh, custom = false)
+          }
+        rigAdjustment = FaceRigAdjustment()
+        faceDebugSnapshotState.value = snapshot
+        val msg = getString(R.string.facerig_reset_done)
+        Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+        snackbarHostState.showSnackbar(msg)
+      } finally {
+        isImportingModel = false
       }
     }
   }
@@ -245,6 +393,7 @@ class MainActivity : ComponentActivity() {
   }
 
   override fun onDestroy() {
+    adjustJob?.cancel()
     filePathCallback?.onReceiveValue(null)
     filePathCallback = null
     webView?.apply {

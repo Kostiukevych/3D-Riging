@@ -31,6 +31,13 @@ enum class DebugAnimationType(val key: String) {
   EMOTION_SHOW("emotion_show"),
 }
 
+data class FaceRigAdjustment(
+  val offsetX: Float = 0f,
+  val offsetY: Float = 0f,
+  val offsetZ: Float = 0f,
+  val scale: Float = 1f,
+)
+
 data class RigBone(
   val name: String,
   val parentName: String?,
@@ -53,6 +60,8 @@ data class CharacterMeshData(
   val headVertexIndices: Set<Int>,
   val headBboxMin: Vec3,
   val headBboxMax: Vec3,
+  val detectedHeadBoneName: String? = null,
+  val vertexColors: FloatArray? = null,
 )
 
 data class RenderBoneSegment(
@@ -77,6 +86,10 @@ data class FaceDebugSnapshot(
   val headBoneCount: Int,
   val vertexCount: Int,
   val isHeadChildVerified: Boolean,
+  val isCustomModel: Boolean,
+  val detectedHeadBoneName: String?,
+  val markers: FaceMarkers,
+  val hasManualMarkers: Boolean,
 )
 
 object CharacterObjLoader {
@@ -88,6 +101,8 @@ object CharacterObjLoader {
 
   fun parseObj(reader: BufferedReader): CharacterMeshData {
     val positions = ArrayList<Float>()
+    val colors = ArrayList<Float>()
+    var hasAllColors = true
     val indices = ArrayList<Short>()
     val triIsHead = ArrayList<Boolean>()
     val headVerts = HashSet<Int>()
@@ -107,15 +122,19 @@ object CharacterObjLoader {
             positions.add(parts[1].toFloat())
             positions.add(parts[2].toFloat())
             positions.add(parts[3].toFloat())
+            if (parts.size >= 7) {
+              colors.add(parts[4].toFloat())
+              colors.add(parts[5].toFloat())
+              colors.add(parts[6].toFloat())
+            } else {
+              hasAllColors = false
+            }
           }
         }
         line.startsWith("f ") -> {
           val parts = line.split(Regex("\\s+")).drop(1)
           if (parts.size >= 3) {
-            val vIdx =
-              parts.map { token ->
-                token.substringBefore('/').toInt() - 1
-              }
+            val vIdx = parts.map { token -> token.substringBefore('/').toInt() - 1 }
             val isHead = currentGroup.contains("head")
             for (k in 1 until vIdx.size - 1) {
               val a = vIdx[0]
@@ -163,37 +182,72 @@ object CharacterObjLoader {
       headVertexIndices = targetVerts,
       headBboxMin = Vec3(minX, minY, minZ),
       headBboxMax = Vec3(maxX, maxY, maxZ),
+      detectedHeadBoneName = "head",
+      vertexColors = if (hasAllColors && colors.size == positions.size) colors.toFloatArray() else null,
     )
   }
 }
 
 class CharacterRigEngine(
-  val mesh: CharacterMeshData,
+  initialMesh: CharacterMeshData,
+  initialIsCustomModel: Boolean = false,
 ) {
   companion object {
     private const val TAG_VALIDATOR = "FaceRigValidator"
     private const val TAG_ENGINE = "CharacterRigEngine"
   }
 
-  val validationErrors: List<String>
-  val bonesWithoutExpressions: List<String>
-  val fittedFaceBones: List<FaceBone>
-  val skeleton: List<RigBone>
-  val boneIndexByName: Map<String, Int>
-  val headSize: Vec3
+  private val rawFaceBones: List<FaceBone> = FaceRig.build()
+  val validationErrors: List<String> = FaceRigValidator.validate(rawFaceBones)
+  val bonesWithoutExpressions: List<String> = FaceRigValidator.bonesWithoutExpression(rawFaceBones)
 
-  private val skinBindings: Array<VertexSkin>
-  private val invBindMatrices: Array<FloatArray>
-  private val localMatrices: Array<FloatArray>
-  private val worldMatrices: Array<FloatArray>
-  private val skinMatrices: Array<FloatArray>
+  private val stateLock = Any()
 
-  val deformedPositions: FloatArray = mesh.restPositions.copyOf()
-  val deformedNormals: FloatArray = FloatArray(mesh.restPositions.size)
+  @Volatile var mesh: CharacterMeshData = initialMesh
+    private set
+
+  @Volatile var isCustomModel: Boolean = initialIsCustomModel
+    private set
+
+  @Volatile var rigAdjustment: FaceRigAdjustment = FaceRigAdjustment()
+    private set
+
+  @Volatile var meshRevision: Int = 0
+    private set
+
+  private lateinit var autoFittedFaceBones: List<FaceBone>
+  @Volatile var currentMarkers: FaceMarkers = FaceMarkers.fromBones(rawFaceBones)
+    private set
+  @Volatile var hasManualMarkers: Boolean = false
+    private set
+
+  lateinit var fittedFaceBones: List<FaceBone>
+    private set
+  lateinit var skeleton: List<RigBone>
+    private set
+  lateinit var boneIndexByName: Map<String, Int>
+    private set
+  lateinit var headSize: Vec3
+    private set
+  lateinit var headCenter: Vec3
+    private set
+
+  private lateinit var skinBindings: Array<VertexSkin>
+  private lateinit var invBindMatrices: Array<FloatArray>
+  private lateinit var localMatrices: Array<FloatArray>
+  private lateinit var worldMatrices: Array<FloatArray>
+  private lateinit var skinMatrices: Array<FloatArray>
+
+  @Volatile var deformedPositions: FloatArray = initialMesh.restPositions.copyOf()
+    private set
+
+  @Volatile var deformedNormals: FloatArray = FloatArray(initialMesh.restPositions.size)
+    private set
+
   val boneSegments: MutableList<RenderBoneSegment> = ArrayList()
 
   val animator = FaceAnimator()
-  val boneTestAnimation: BoneTestAnimation
+  val boneTestAnimation: BoneTestAnimation = BoneTestAnimation(rawFaceBones)
   private val expressionTestAnimation = ExpressionTestAnimation()
   private val idleAnimation = IdleAnimation()
   private val talkAnimation = TalkAnimation()
@@ -206,10 +260,6 @@ class CharacterRigEngine(
   private var elapsedTime = 0f
 
   init {
-    val rawFaceBones = FaceRig.build()
-    validationErrors = FaceRigValidator.validate(rawFaceBones)
-    bonesWithoutExpressions = FaceRigValidator.bonesWithoutExpression(rawFaceBones)
-
     if (validationErrors.isEmpty()) {
       Log.i(
         TAG_VALIDATOR,
@@ -222,15 +272,91 @@ class CharacterRigEngine(
       }
     }
 
-    headSize = mesh.headBboxMax - mesh.headBboxMin
-    fittedFaceBones = FaceRig.fitTo(rawFaceBones, mesh.headBboxMin, mesh.headBboxMax)
+    bindMeshInternal(initialMesh, initialIsCustomModel, FaceRigAdjustment(), manualMarkers = null)
+    selectAnimation(DebugAnimationType.BONE_TEST)
+    step(0f)
+  }
+
+  fun replaceMesh(newMesh: CharacterMeshData, custom: Boolean): FaceDebugSnapshot {
+    synchronized(stateLock) {
+      val freshAdjustment = FaceRigAdjustment()
+      bindMeshInternal(newMesh, custom, freshAdjustment, manualMarkers = null)
+      meshRevision += 1
+      return stepLocked(0f)
+    }
+  }
+
+  fun updateRigAdjustment(adjustment: FaceRigAdjustment): FaceDebugSnapshot {
+    synchronized(stateLock) {
+      bindMeshInternal(mesh, isCustomModel, adjustment, manualMarkers = null)
+      return stepLocked(0f)
+    }
+  }
+
+  fun setMarkers(markers: FaceMarkers): FaceDebugSnapshot {
+    synchronized(stateLock) {
+      bindMeshInternal(mesh, isCustomModel, rigAdjustment, manualMarkers = markers)
+      return stepLocked(0f)
+    }
+  }
+
+  fun moveMarker(markerIndex: Int, deltaBlender: Vec3): FaceDebugSnapshot {
+    synchronized(stateLock) {
+      val list = currentMarkers.toList().toMutableList()
+      if (markerIndex in list.indices) {
+        list[markerIndex] = list[markerIndex] + deltaBlender
+        val updatedMarkers = FaceMarkers.fromList(list)
+        bindMeshInternal(mesh, isCustomModel, rigAdjustment, manualMarkers = updatedMarkers)
+      }
+      return stepLocked(0f)
+    }
+  }
+
+  fun resetMarkersToAuto(): FaceDebugSnapshot {
+    synchronized(stateLock) {
+      bindMeshInternal(mesh, isCustomModel, rigAdjustment, manualMarkers = null)
+      return stepLocked(0f)
+    }
+  }
+
+  private fun bindMeshInternal(
+    targetMesh: CharacterMeshData,
+    custom: Boolean,
+    adjustment: FaceRigAdjustment,
+    manualMarkers: FaceMarkers?,
+  ) {
+    mesh = targetMesh
+    isCustomModel = custom
+    rigAdjustment = adjustment
+
+    val baseCenter = (targetMesh.headBboxMin + targetMesh.headBboxMax) * 0.5f
+    val baseHalf = (targetMesh.headBboxMax - targetMesh.headBboxMin) * 0.5f * adjustment.scale.coerceIn(0.4f, 2.0f)
+    val adjustedCenter =
+      baseCenter + Vec3(adjustment.offsetX, adjustment.offsetY, adjustment.offsetZ)
+    val adjustedMin = adjustedCenter - baseHalf
+    val adjustedMax = adjustedCenter + baseHalf
+
+    headSize = adjustedMax - adjustedMin
+    headCenter = adjustedCenter
+
+    autoFittedFaceBones = FaceFit.autoFit(adjustedMin, adjustedMax)
+    if (manualMarkers != null) {
+      currentMarkers = manualMarkers
+      hasManualMarkers = true
+      fittedFaceBones = FaceFit.manualFit(autoFittedFaceBones, manualMarkers)
+    } else {
+      currentMarkers = FaceMarkers.fromBones(autoFittedFaceBones)
+      hasManualMarkers = false
+      fittedFaceBones = autoFittedFaceBones
+    }
     Log.i(
       TAG_ENGINE,
-      "Fitted FaceRig to head bbox min=${mesh.headBboxMin}, max=${mesh.headBboxMax}, size=$headSize",
+      "FaceFit(${if (hasManualMarkers) "manual" else "auto"}) head bbox min=$adjustedMin, max=$adjustedMax " +
+        "(custom=$custom, headBone=${targetMesh.detectedHeadBoneName})",
     )
 
-    val headBaseZ = mesh.headBboxMin.z
-    val headTopZ = mesh.headBboxMax.z
+    val headBaseZ = targetMesh.headBboxMin.z
+    val headTopZ = targetMesh.headBboxMax.z
     val bodySpecs =
       listOf(
         Triple("hips", null, Vec3(0f, 0f, -0.35f) to Vec3(0f, 0f, -0.10f)),
@@ -317,16 +443,17 @@ class CharacterRigEngine(
     val spineBoneIdx = indexMap["spine"] ?: chestBoneIdx
     val hipsBoneIdx = indexMap["hips"] ?: spineBoneIdx
 
-    val vertexCount = mesh.restPositions.size / 3
+    val vertexCount = targetMesh.restPositions.size / 3
+    val scaledFalloff = (0.10f * adjustment.scale).coerceIn(0.05f, 0.25f)
     skinBindings =
       Array(vertexCount) { vi ->
-        val vx = mesh.restPositions[vi * 3]
-        val vy = mesh.restPositions[vi * 3 + 1]
-        val vz = mesh.restPositions[vi * 3 + 2]
+        val vx = targetMesh.restPositions[vi * 3]
+        val vy = targetMesh.restPositions[vi * 3 + 1]
+        val vz = targetMesh.restPositions[vi * 3 + 2]
         val v = Vec3(vx, vy, vz)
 
-        if (vi in mesh.headVertexIndices) {
-          val faceWeights = FaceRig.skinWeights(v, fittedFaceBones, maxInfl = 4, falloff = 0.10f)
+        if (vi in targetMesh.headVertexIndices) {
+          val faceWeights = FaceRig.skinWeights(v, fittedFaceBones, maxInfl = 4, falloff = scaledFalloff)
           if (faceWeights.isEmpty()) {
             VertexSkin(intArrayOf(headBoneIdx), floatArrayOf(1f))
           } else {
@@ -352,26 +479,34 @@ class CharacterRigEngine(
     localMatrices = Array(skeleton.size) { FloatArray(16) }
     worldMatrices = Array(skeleton.size) { FloatArray(16) }
     skinMatrices = Array(skeleton.size) { FloatArray(16) }
-
-    boneTestAnimation = BoneTestAnimation(fittedFaceBones)
-    selectAnimation(DebugAnimationType.BONE_TEST)
-    step(0f)
+    deformedPositions = targetMesh.restPositions.copyOf()
+    deformedNormals = FloatArray(targetMesh.restPositions.size)
   }
 
   fun selectAnimation(type: DebugAnimationType) {
-    selectedAnimation = type
-    val anim: FaceAnimation =
-      when (type) {
-        DebugAnimationType.BONE_TEST -> boneTestAnimation
-        DebugAnimationType.EXPRESSION_TEST -> expressionTestAnimation
-        DebugAnimationType.IDLE -> idleAnimation
-        DebugAnimationType.TALK -> talkAnimation
-        DebugAnimationType.EMOTION_SHOW -> emotionShowAnimation
-      }
-    animator.play(anim)
+    synchronized(stateLock) {
+      selectedAnimation = type
+      val anim: FaceAnimation =
+        when (type) {
+          DebugAnimationType.BONE_TEST -> boneTestAnimation
+          DebugAnimationType.EXPRESSION_TEST -> expressionTestAnimation
+          DebugAnimationType.IDLE -> idleAnimation
+          DebugAnimationType.TALK -> talkAnimation
+          DebugAnimationType.EMOTION_SHOW -> emotionShowAnimation
+        }
+      animator.play(anim)
+    }
   }
 
-  fun step(dt: Float): FaceDebugSnapshot {
+  fun step(dt: Float): FaceDebugSnapshot = synchronized(stateLock) { stepLocked(dt) }
+
+  fun readRenderState(consumer: (FloatArray, FloatArray, List<RenderBoneSegment>, Vec3, FaceMarkers, Int) -> Unit) {
+    synchronized(stateLock) {
+      consumer(deformedPositions, deformedNormals, boneSegments, headCenter, currentMarkers, meshRevision)
+    }
+  }
+
+  private fun stepLocked(dt: Float): FaceDebugSnapshot {
     val clampedDt = dt.coerceIn(0f, 0.05f)
     elapsedTime += clampedDt
     val poses = animator.update(clampedDt)
@@ -394,6 +529,10 @@ class CharacterRigEngine(
       headBoneCount = fittedFaceBones.size,
       vertexCount = mesh.restPositions.size / 3,
       isHeadChildVerified = skeleton.firstOrNull { it.name == "face" }?.parentName == "head",
+      isCustomModel = isCustomModel,
+      detectedHeadBoneName = mesh.detectedHeadBoneName,
+      markers = currentMarkers,
+      hasManualMarkers = hasManualMarkers,
     )
   }
 
@@ -407,12 +546,7 @@ class CharacterRigEngine(
         if (bone.name == "head" && headMotionEnabled) {
           BonePose(
             move = Vec3(0f, 0f, 0f),
-            rotDeg =
-              Vec3(
-                4f * sin(elapsedTime * 1.1f),
-                0f,
-                10f * sin(elapsedTime * 0.7f),
-              ),
+            rotDeg = Vec3(4f * sin(elapsedTime * 1.1f), 0f, 10f * sin(elapsedTime * 0.7f)),
           )
         } else {
           poses[bone.name] ?: BonePose()
@@ -448,7 +582,6 @@ class CharacterRigEngine(
       multiplyMat4(worldMatrices[i], invBindMatrices[i], skinMatrices[i])
     }
 
-    // Deform vertices with Linear Blend Skinning
     val rest = mesh.restPositions
     for (vi in skinBindings.indices) {
       val skin = skinBindings[vi]
@@ -475,7 +608,6 @@ class CharacterRigEngine(
 
     recomputeNormals()
 
-    // Update bone debug segments in animated model space
     boneSegments.clear()
     for (i in skeleton.indices) {
       val bone = skeleton[i]
@@ -587,7 +719,6 @@ class CharacterRigEngine(
     val cz = cos(rzDeg * deg2Rad)
     val sz = sin(rzDeg * deg2Rad)
 
-    // R = Rz * Ry * Rx in column-major order
     out[0] = cz * cy
     out[1] = sz * cy
     out[2] = -sy
