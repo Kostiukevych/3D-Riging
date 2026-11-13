@@ -29,6 +29,13 @@ object Mesh2MotionWebViewFactory {
   private const val ASSET_DOMAIN = "appassets.androidplatform.net"
   private const val TAG = "Mesh2MotionWebView"
 
+  private val CORS_HEADERS =
+    mapOf(
+      "Access-Control-Allow-Origin" to "*",
+      "Access-Control-Allow-Methods" to "GET, HEAD, OPTIONS",
+      "Access-Control-Allow-Headers" to "*",
+    )
+
   @SuppressLint("SetJavaScriptEnabled")
   fun create(
     context: Context,
@@ -66,13 +73,17 @@ object Mesh2MotionWebViewFactory {
         databaseEnabled = true
         allowFileAccess = true
         allowContentAccess = true
+        @Suppress("DEPRECATION")
+        allowFileAccessFromFileURLs = true
+        @Suppress("DEPRECATION")
+        allowUniversalAccessFromFileURLs = true
         useWideViewPort = true
         loadWithOverviewMode = true
         setSupportZoom(true)
         builtInZoomControls = true
         displayZoomControls = false
         mediaPlaybackRequiresUserGesture = false
-        mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
         cacheMode = WebSettings.LOAD_DEFAULT
       }
 
@@ -84,43 +95,43 @@ object Mesh2MotionWebViewFactory {
             view: WebView,
             request: WebResourceRequest,
           ): WebResourceResponse? {
+            if (request.method.equals("OPTIONS", ignoreCase = true)) {
+              return emptyResponse(204, "No Content", "text/plain")
+            }
+
             val uri = request.url
             val host = uri.host?.lowercase()
 
             // Strictly serve local assets for the virtual asset domain (including root-relative remapping)
             if (host == ASSET_DOMAIN) {
-              val rawPath = uri.path ?: "/"
-              if (rawPath.startsWith("/assets/")) {
-                val relAsset = rawPath.removePrefix("/assets/")
+              val rawPath = Uri.decode(uri.path ?: "/")
+              val candidates = resolveLocalAssetCandidates(rawPath)
+              for (relAsset in candidates) {
                 if (assetExists(context, relAsset)) {
-                  val direct = assetLoader.shouldInterceptRequest(uri)
-                  if (direct != null) {
-                    normalizeMimeTypeIfNeeded(uri.path, direct)
-                    return direct
-                  }
-                }
-              } else {
-                val remappedPath = "/assets/www${if (rawPath.startsWith("/")) rawPath else "/$rawPath"}"
-                val relAsset = remappedPath.removePrefix("/assets/")
-                if (assetExists(context, relAsset)) {
-                  val remapped = uri.buildUpon().path(remappedPath).build()
-                  val mappedResponse = assetLoader.shouldInterceptRequest(remapped)
-                  if (mappedResponse != null) {
-                    normalizeMimeTypeIfNeeded(remapped.path, mappedResponse)
-                    return mappedResponse
+                  val assetUri = uri.buildUpon().path("/assets/$relAsset").build()
+                  val response = assetLoader.shouldInterceptRequest(assetUri)
+                  if (response != null) {
+                    normalizeMimeTypeIfNeeded(relAsset, response)
+                    attachCorsHeaders(response)
+                    return response
                   }
                 }
               }
 
               // Prevent WebView from logging FileNotFoundException or doing DNS resolution on missing assets
               val status = if (rawPath.endsWith("favicon.ico", ignoreCase = true)) 204 else 404
-              return emptyResponse(status, if (status == 204) "No Content" else "Not Found", guessMimeFromPath(rawPath))
+              return emptyResponse(
+                status,
+                if (status == 204) "No Content" else "Not Found",
+                guessMimeFromPath(rawPath),
+              )
             }
 
-            // Offline isolation: try local offline_vendor mirror before returning an empty offline stub
+            // Offline isolation: try local offline_vendor mirror or direct www/ fallback before stubbing
             val offlineMirrored = tryLoadMirroredVendorAsset(context, assetLoader, uri)
             if (offlineMirrored != null) {
               normalizeMimeTypeIfNeeded(uri.path, offlineMirrored)
+              attachCorsHeaders(offlineMirrored)
               return offlineMirrored
             }
 
@@ -137,7 +148,6 @@ object Mesh2MotionWebViewFactory {
             if (url.host.equals(ASSET_DOMAIN, ignoreCase = true)) {
               return false
             }
-            // Open explicit user-tapped external links in system browser if desired
             if (request.hasGesture() && (url.scheme == "http" || url.scheme == "https")) {
               runCatching {
                 context.startActivity(Intent(Intent.ACTION_VIEW, url))
@@ -238,6 +248,24 @@ object Mesh2MotionWebViewFactory {
     }
   }
 
+  internal fun resolveLocalAssetCandidates(rawPath: String): List<String> {
+    val clean = rawPath.trimStart('/')
+    if (clean.isEmpty()) return listOf("www/index.html")
+    val out = ArrayList<String>(3)
+    if (clean.startsWith("assets/www/")) {
+      out += clean.removePrefix("assets/")
+    } else if (clean.startsWith("assets/")) {
+      // Root-relative Vite bundle requests like /assets/chunk.js or /assets/rigs/human.glb live under www/assets/
+      out += "www/$clean"
+      out += clean.removePrefix("assets/")
+    } else if (clean.startsWith("www/")) {
+      out += clean
+    } else {
+      out += "www/$clean"
+    }
+    return out
+  }
+
   private fun assetExists(context: Context, assetPath: String): Boolean {
     val clean = assetPath.trimStart('/')
     if (clean.isEmpty()) return false
@@ -255,30 +283,48 @@ object Mesh2MotionWebViewFactory {
     externalUri: Uri,
   ): WebResourceResponse? {
     val host = externalUri.host ?: return null
-    val path = externalUri.path?.trimStart('/') ?: ""
+    val path = Uri.decode(externalUri.path ?: "").trimStart('/')
     if (path.isEmpty()) return null
-    val relAsset = "www/offline_vendor/$host/$path"
-    if (!assetExists(context, relAsset)) return null
-    val mirroredUri =
-      Uri.Builder()
-        .scheme("https")
-        .authority(ASSET_DOMAIN)
-        .path("/assets/$relAsset")
-        .build()
-    return assetLoader.shouldInterceptRequest(mirroredUri)
+    val candidatePaths =
+      listOf(
+        "www/offline_vendor/$host/$path",
+        "www/$path",
+      )
+    for (relAsset in candidatePaths) {
+      if (!assetExists(context, relAsset)) continue
+      val mirroredUri =
+        Uri.Builder()
+          .scheme("https")
+          .authority(ASSET_DOMAIN)
+          .path("/assets/$relAsset")
+          .build()
+      val response = assetLoader.shouldInterceptRequest(mirroredUri)
+      if (response != null) return response
+    }
+    return null
   }
 
-  private fun emptyResponse(statusCode: Int, reason: String, mimeType: String): WebResourceResponse =
-    WebResourceResponse(
+  private fun attachCorsHeaders(response: WebResourceResponse) {
+    val merged = HashMap<String, String>()
+    response.responseHeaders?.let { merged.putAll(it) }
+    merged.putAll(CORS_HEADERS)
+    response.responseHeaders = merged
+  }
+
+  private fun emptyResponse(statusCode: Int, reason: String, mimeType: String): WebResourceResponse {
+    val headers = HashMap<String, String>(CORS_HEADERS)
+    headers["Cache-Control"] = "no-store"
+    return WebResourceResponse(
       mimeType,
       "UTF-8",
       statusCode,
       reason,
-      mapOf("Cache-Control" to "no-store"),
+      headers,
       ByteArrayInputStream(ByteArray(0)),
     )
+  }
 
-  private fun guessMimeFromPath(path: String?): String {
+  internal fun guessMimeFromPath(path: String?): String {
     val lowerPath = path?.lowercase() ?: return "application/octet-stream"
     return when {
       lowerPath.endsWith(".js") || lowerPath.endsWith(".mjs") -> "application/javascript"
@@ -295,6 +341,10 @@ object Mesh2MotionWebViewFactory {
       lowerPath.endsWith(".ttf") -> "font/ttf"
       lowerPath.endsWith(".glb") -> "model/gltf-binary"
       lowerPath.endsWith(".gltf") -> "model/gltf+json"
+      lowerPath.endsWith(".dae") -> "model/vnd.collada+xml"
+      lowerPath.endsWith(".obj") -> "text/plain"
+      lowerPath.endsWith(".fbx") || lowerPath.endsWith(".bin") -> "application/octet-stream"
+      lowerPath.endsWith(".zip") -> "application/zip"
       else -> "application/octet-stream"
     }
   }
@@ -311,6 +361,9 @@ object Mesh2MotionWebViewFactory {
         lowerPath.endsWith(".json") -> "application/json"
         lowerPath.endsWith(".svg") -> "image/svg+xml"
         lowerPath.endsWith(".woff2") -> "font/woff2"
+        lowerPath.endsWith(".glb") -> "model/gltf-binary"
+        lowerPath.endsWith(".gltf") -> "model/gltf+json"
+        lowerPath.endsWith(".dae") -> "model/vnd.collada+xml"
         else -> null
       }
 

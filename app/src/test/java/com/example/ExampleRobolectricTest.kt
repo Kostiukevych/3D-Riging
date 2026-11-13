@@ -15,6 +15,7 @@ import com.example.facerig.blenderToGltf
 import com.example.facerig.gltfToBlender
 import com.example.storage.ModelFileSaver
 import com.example.webview.Mesh2MotionTranslator
+import com.example.webview.Mesh2MotionWebViewFactory
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import org.json.JSONObject
@@ -132,6 +133,26 @@ class ExampleRobolectricTest {
     assertEquals(3, mesh.restPositions.size / 3)
     assertEquals(3, mesh.triangleIndices.size)
     assertEquals("mixamorig:Head", mesh.detectedHeadBoneName)
+  }
+
+  @Test
+  fun `webview asset resolver handles www assets and 3d mime types`() {
+    assertEquals(
+      listOf("www/rigs/human.glb"),
+      Mesh2MotionWebViewFactory.resolveLocalAssetCandidates("/rigs/human.glb"),
+    )
+    assertEquals(
+      listOf("www/assets/rigs/human.glb", "rigs/human.glb"),
+      Mesh2MotionWebViewFactory.resolveLocalAssetCandidates("/assets/rigs/human.glb"),
+    )
+    assertEquals(
+      listOf("www/index.html"),
+      Mesh2MotionWebViewFactory.resolveLocalAssetCandidates("/assets/www/index.html"),
+    )
+    assertEquals("model/gltf-binary", Mesh2MotionWebViewFactory.guessMimeFromPath("/rigs/human.glb"))
+    assertEquals("model/gltf+json", Mesh2MotionWebViewFactory.guessMimeFromPath("/rigs/human.gltf"))
+    assertEquals("application/octet-stream", Mesh2MotionWebViewFactory.guessMimeFromPath("/rigs/human.fbx"))
+    assertEquals("application/wasm", Mesh2MotionWebViewFactory.guessMimeFromPath("/wasm/draco.wasm"))
   }
 
   private fun buildSyntheticEmbeddedGltf(): ByteArray {

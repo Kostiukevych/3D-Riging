@@ -14,6 +14,8 @@ jobs:
     steps:
       - name: Checkout Android Repository
         uses: actions/checkout@v4
+        with:
+          lfs: true
 
       - name: Setup Node.js 20
         uses: actions/setup-node@v4
@@ -22,10 +24,16 @@ jobs:
 
       - name: Clone, Build & Localize Offline Mesh2Motion Web Bundle
         run: |
+          git lfs install
           git clone --depth 1 https://github.com/Mesh2Motion/mesh2motion-app.git temp_web
           cd temp_web
+          git lfs fetch --all || true
+          git lfs pull
+          cd ..
+          python3 .github/scripts/localize_web_assets.py --prepare-source temp_web
+          cd temp_web
           npm ci || npm install
-          npm run build -- --base=./ || npx vite build --base=./
+          npm run build || npx vite build --base=./
           cd ..
           python3 .github/scripts/localize_web_assets.py temp_web
           mkdir -p app/src/main/assets/www
